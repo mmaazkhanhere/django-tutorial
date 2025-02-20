@@ -3,7 +3,9 @@ from dotenv import load_dotenv
 import os
 import logging
 from ..helper_functions import clean_email_body
+from django.db import transaction
 
+from ..models import User, EmailTranscript, PCPContract, CLASSIFICATION_CHOICES
 # from sendgrid import SendGridAPIClient
 # from sendgrid.helpers.mail import *
 
@@ -61,16 +63,23 @@ def categorize_email(state: GraphState) -> GraphState:
     """Categorizes the current email using the categorize_email agent."""
     logger.info(Fore.YELLOW + "Checking email category...\n" + Style.RESET_ALL)
     
-    # Get the last email
+    # Get the last email from the state
     current_email = state["emails"][-1]
+    sender_email = current_email.sender
+
+    try:
+        user = User.objects.filter(email=sender_email).first()
+    except User.DoesNotExist:
+        logger.error(Fore.RED + f"User with email {sender_email} not found." + Style.RESET_ALL)
+        return state
+    
     user_details = state.get("user_details", {})
-    user_details['email'] = current_email.sender
+    user_details['email'] = sender_email
 
-    customer_name = user_details.get("name", "")
-
+    customer_name = user.first_name if user else user_details.get("name", sender_email)
 
     transcript = state.get("transcript", [])
-    new_message =  clean_email_body(current_email.body)
+    new_message = clean_email_body(current_email.body)
 
 
     entry = {
@@ -101,7 +110,6 @@ def categorize_email(state: GraphState) -> GraphState:
     }
 
 
-
 def route_email_based_on_category(state: GraphState) -> str:
     """Routes the email based on its category."""
     print(Fore.YELLOW + "Routing email based on category...\n" + Style.RESET_ALL)
@@ -119,7 +127,6 @@ def route_email_based_on_category(state: GraphState) -> str:
         return "spam"
     
 
-
 def extract_user_information(state: GraphState):
     """Extract user information from the email"""
     logger.info(Fore.YELLOW + "Extracting user details...\n" + Style.RESET_ALL)
@@ -130,6 +137,7 @@ def extract_user_information(state: GraphState):
         return {"user_details": state.get("user_details", {})}  # Preserve existing user details
 
     current_email = state["emails"][-1]  # Get the latest email
+    sender_email = current_email.sender
 
     # Ensure existing_user_details is always a dictionary
     existing_user_details = state.get("user_details", {})
@@ -140,7 +148,7 @@ def extract_user_information(state: GraphState):
             existing_user_details = UserDetails(**existing_user_details)
     except Exception as e:
         logger.error(f"Failed to parse existing_user_details: {e}")
-        existing_user_details = UserDetails(name="", email="", phone="", availability="", car="", status=None)
+        existing_user_details = UserDetails(name="", email="", phone="", availability="", car="")
 
     # Prepare the prompt for LLM extraction
     user_extraction_prompt = PromptTemplate(
@@ -157,23 +165,41 @@ def extract_user_information(state: GraphState):
         logger.error(f"LLM extraction failed: {e}")
         result = UserDetails(name="", email="", phone="", availability="", car="", status=None)
 
-    logger.info(Fore.CYAN + f"Extracted User Details from LLM: {result.dict()}" + Style.RESET_ALL)
+    logger.info(Fore.CYAN + f"Extracted User Details from LLM: {result}" + Style.RESET_ALL)
 
-    # Ensure phone number has a fallback if missing
-    result.phone = result.phone if result.phone else ""
+    try:
+        user = User.objects.filter(email=sender_email).first()
+    except User.DoesNotExist:
+        logger.error(Fore.RED + f"User with email {sender_email} not found." + Style.RESET_ALL)
+        return {"user_details": existing_user_details}  # Preserve existing user details
+
+    if result.name:
+        name_parts = result.name.strip(" ", 1)
+        user.first_name = name_parts[0]
+        user.last_name = name_parts[1] if len(name_parts) > 1 else ""
+
+    user.mobile_number = result.phone if result.phone else user.mobile_number
+    user.availability = result.availability if result.availability else user.availability
+
+    if result.car:
+        pcp_contract, created = PCPContract.objects.get_or_create(user=user)
+        pcp_contract.car = result.car
+        pcp_contract.save()
+
+    user.save()
+
+    logger.info(Fore.GREEN + f"User details updated for {user.email}" + Style.RESET_ALL)
 
     updated_user_details = UserDetails(
-        name=result.name if result.name else existing_user_details.name,
-        email=result.email if result.email else existing_user_details.email,
-        phone=result.phone if result.phone else existing_user_details.phone,
-        availability=result.availability if result.availability else existing_user_details.availability,
-        car=result.car if result.car else existing_user_details.car,
+        name=f"{user.first_name} {user.last_name}".strip(),
+        email=user.email,
+        phone=user.mobile_number,
+        availability=user.availability,
+        car=pcp_contract.car if result.car else existing_user_details.car,
     )
-
     logger.info(Fore.MAGENTA + f"Final User Details: \n{updated_user_details.dict()}" + Style.RESET_ALL)
 
     return {"user_details": updated_user_details}
-
 
 
 
@@ -181,37 +207,45 @@ def classifying_user(state: GraphState):
     """Classifies the user and updates only the status."""
     logger.info(Fore.YELLOW + "Classifying user...\n" + Style.RESET_ALL)
 
-    previous_emails = state["previous_emails"]
-    emails_send = state["emails_send"]
     user_details = state["user_details"]
     user_status = state["current_status"]
+    user_email = user_details.get("email")
+
+    transcript = state.get("transcript", [])
+
+    if not user_email:
+        logger.error(Fore.RED + "User email not found in user_details." + Style.RESET_ALL)
+        return state
+    
+    try:
+        user = User.objects.get(email=user_email)
+    except User.DoesNotExist:
+        logger.error(Fore.RED + f"User with email {user_email} not found." + Style.RESET_ALL)
+        return state
+    
 
     user_classification_prompt = PromptTemplate(
         template=USER_CLASSIFICATION_PROMPT,
         input_variables=["emails", "user_details"]
     )
-    formatted_prompt = user_classification_prompt.format(emails=previous_emails, user_details=user_details)
+    formatted_prompt = user_classification_prompt.format(emails=transcript, user_details=user_details)
     structure_llm = llm.with_structured_output(UserClassification)
     classification_result = structure_llm.invoke(formatted_prompt)
 
-    # Normalize the status value (strip whitespace and convert to lower case)
     normalized_status = classification_result.status.strip().lower()
+    logger.info(Fore.MAGENTA + f"User classification: {normalized_status}" + Style.RESET_ALL)
 
-    print(f"User classification: {normalized_status}")
-
-    # Convert user_details dictionary to a Pydantic model
-    user_status = normalized_status
-
-    logger.info(Fore.MAGENTA + f"Updated user classification: {normalized_status}" + Style.RESET_ALL)
-
-    # Increment emails_send only when the status is "unsure"
-    if normalized_status == "unsure":
-        emails_send += 1
-        logger.info(Fore.YELLOW + f"Updating emails send: {emails_send}" + Style.RESET_ALL)
+    with transaction.atomic():
+        if normalized_status in CLASSIFICATION_CHOICES:
+            if user.classification != normalized_status:
+                user.classification = normalized_status
+                user.save()
+                logger.info(Fore.GREEN + f"User classification updated to {normalized_status}" + Style.RESET_ALL)
+        else:
+            logger.warning(Fore.YELLOW + f"Invalid classification status: {normalized_status}" + Style.RESET_ALL)
 
     return {
         "user_status": user_status,
-        "emails_send": emails_send
     }
 
 
@@ -233,12 +267,12 @@ def write_draft_email(state: GraphState) -> GraphState:
     """Writes a draft email based on the current email and retrieved information."""
     logger.info(Fore.YELLOW + "Writing draft email...\n" + Style.RESET_ALL)
 
-    previous_emails = state["previous_emails"]
+    writer_messages = state.get('writer_messages', [])
+    transcript = state.get('transcript', [])
     category = state["email_category"]
     user_details = state["user_details"]  # This is a `UserDetails` object, not a dict
     user_status = user_details.status.status if user_details.status else "unsure"  # Fix: Use dot notation
 
-    writer_messages = state.get('writer_messages', [])
     writer_prompt = None
 
     # Custom email responses for Approved and Refused cases
@@ -278,7 +312,7 @@ def write_draft_email(state: GraphState) -> GraphState:
     inputs = (
         f'# **EMAIL CATEGORY:** {state["email_category"]}\n\n'
         f'# **USER DETAILS:** {user_details}\n\n'
-        f'# **EMAIL CONTENT:**\n{previous_emails}\n\n'
+        f'# **EMAIL CONTENT:**\n{transcript}\n\n'
     )
 
     formatted_prompt = writer_prompt.format(
@@ -286,7 +320,14 @@ def write_draft_email(state: GraphState) -> GraphState:
         history=writer_messages
     )
 
-    structure_llm = llm.with_structured_output(WriterOutput)
+    try:
+        structure_llm = llm.with_structured_output(WriterOutput)
+        draft_result = structure_llm.invoke(formatted_prompt)
+        logger.info(f"Draft Result: {draft_result}")
+    except Exception as e:
+        logger.error(f"LLM failed to generate draft: {e}")
+        return state  # Return the original state if LLM fails
+
 
     # Write email
     draft_result = structure_llm.invoke(formatted_prompt)
@@ -394,12 +435,7 @@ def send_email_response(state: GraphState) -> GraphState:
 
     # Reset the writer_messages after the email has been sent
     state["writer_messages"] = []
-    return {
-        "retrieved_documents": "",
-        "trials": 0,
-        "transcript": transcript,
-        "writer_messages": []
-    }
+    return state
 
 
 def skip_spam_email(state):

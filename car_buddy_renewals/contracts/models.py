@@ -40,6 +40,7 @@ class User(models.Model):
         default='unsure'
     )
     is_contacted = models.BooleanField(default=False)  # True when an email is sent
+    availability = models.TextField(blank=True, null=True)
     email_transcripts = models.ManyToManyField(EmailTranscript, blank=True, related_name='users')
 
     def __str__(self):
