@@ -7,7 +7,7 @@ import re
 # from sendgrid import SendGridAPIClient
 # from sendgrid.helpers.mail import *
 
-# from langchain_openai import ChatOpenAI as OpenAI
+from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, PromptTemplate
 
 from .gmail_tool import GmailToolsClass
@@ -24,9 +24,9 @@ SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
 FROM_EMAIL = os.getenv("FROM_EMAIL")
 TEMPLATE_ID = os.getenv("TEMPLATE_ID")
 
-llm: OpenAI = OpenAI(
-    model="gpt-4o",
-    api_key= os.getenv("OPENAI_API_KEY"),
+llm: ChatGroq = ChatGroq(
+    model="deepseek-r1-distill-llama-70b",
+    api_key= os.getenv("GROQ_API_KEY"),
     temperature=0.5
 )
 

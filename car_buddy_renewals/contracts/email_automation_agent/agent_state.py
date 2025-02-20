@@ -77,4 +77,3 @@ class GraphState(TypedDict):
     current_status: UserStatus  # Updated status after classification
     sendable: bool  # Is the draft sendable?
     trials: int  # Number of email rewrite attempts
-    max_trials: int  # Maximum rewrite attempts allowed
