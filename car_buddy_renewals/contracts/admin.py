@@ -19,6 +19,6 @@ class EmailTranscriptAdmin(admin.ModelAdmin):
 
 
 
-admin.site.register(User)
-admin.site.register(PCPContract)
-admin.site.register(EmailTranscript)
+admin.site.register(User, UserAdmin)
+admin.site.register(PCPContract, PCPContractAdmin)
+admin.site.register(EmailTranscript, EmailTranscriptAdmin)
