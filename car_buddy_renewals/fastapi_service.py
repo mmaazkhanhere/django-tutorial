@@ -12,6 +12,7 @@ from contracts.models import EmailTranscript, User
 
 from contracts.email_automation_agent.agent import email_agent
 
+email_agent = email_agent()
 
 app = FastAPI()
 
@@ -31,7 +32,7 @@ def run_agent():
     """
     try:
         # Fetch the user (Example: first user who hasn't been contacted)
-        user = User.objects.filter(is_contacted=False).first()
+        user = User.objects.filter(is_contacted=True).first()
 
         if not user:
             raise HTTPException(status_code=404, detail="No users found for processing")
@@ -66,12 +67,10 @@ def run_agent():
 
         # Fetch associated email transcripts
         transcripts = list(user.email_transcripts.values_list('transcript', flat=True))
-        initial_state["emails"] = transcripts
-        initial_state["current_email"] = transcripts[-1] if transcripts else initial_state["current_email"]
         initial_state["transcript"] = transcripts
 
         # Run the AI agent with the prepared state
-        result = email_agent(initial_state)
+        result = email_agent.invoke(initial_state)
 
         # Optionally, mark user as contacted after processing
         user.is_contacted = True
@@ -81,6 +80,3 @@ def run_agent():
 
     except HTTPException as http_err:
         return {"status": "error", "message": http_err.detail}
-
-    except Exception as e:
-        return {"status": "error", "message": str(e)}

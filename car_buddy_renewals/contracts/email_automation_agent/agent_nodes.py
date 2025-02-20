@@ -2,7 +2,8 @@ from colorama import Fore, Style
 from dotenv import load_dotenv
 import os
 import logging
-from ..helper_functions import clean_email_body
+from ..helper_functions.clean_email_body import clean_email_body
+from ..helper_functions.extract_name_and_email import extract_name_and_email
 from django.db import transaction
 
 from ..models import User, EmailTranscript, PCPContract, CLASSIFICATION_CHOICES
@@ -66,6 +67,11 @@ def categorize_email(state: GraphState) -> GraphState:
     # Get the last email from the state
     current_email = state["emails"][-1]
     sender_email = current_email.sender
+    category = state["email_category"]
+
+    print(f"Email Sender in Category: {sender_email}")
+
+    print(f"Email Category: {category}")
 
     try:
         user = User.objects.filter(email=sender_email).first()
@@ -81,6 +87,7 @@ def categorize_email(state: GraphState) -> GraphState:
     transcript = state.get("transcript", [])
     new_message = clean_email_body(current_email.body)
 
+    print(f"Cleaned New Message: {new_message}")
 
     entry = {
         'sender': customer_name,
@@ -95,7 +102,7 @@ def categorize_email(state: GraphState) -> GraphState:
         template=CATEGORIZE_EMAIL_PROMPT,
         input_variables=["email"]
     )
-    formatted_prompt = email_category_prompt.format(email=current_email.body)
+    formatted_prompt = email_category_prompt.format(email=new_message)
     
     structure_llm = llm.with_structured_output(CategorizeEmailOutput)
     result = structure_llm.invoke(formatted_prompt)
@@ -136,19 +143,17 @@ def extract_user_information(state: GraphState):
         logger.error("No emails found in state.")
         return {"user_details": state.get("user_details", {})}  # Preserve existing user details
 
+
     current_email = state["emails"][-1]  # Get the latest email
     sender_email = current_email.sender
+    # user_details['email'] = sender_email
+
+    # print(f"Current Sender: {sender_email}")
 
     # Ensure existing_user_details is always a dictionary
     existing_user_details = state.get("user_details", {})
 
-    # Convert existing_user_details to a UserDetails model if it isn't already
-    try:
-        if isinstance(existing_user_details, dict):
-            existing_user_details = UserDetails(**existing_user_details)
-    except Exception as e:
-        logger.error(f"Failed to parse existing_user_details: {e}")
-        existing_user_details = UserDetails(name="", email="", phone="", availability="", car="")
+
 
     # Prepare the prompt for LLM extraction
     user_extraction_prompt = PromptTemplate(
@@ -169,12 +174,13 @@ def extract_user_information(state: GraphState):
 
     try:
         user = User.objects.filter(email=sender_email).first()
+        print(f"User: {user}")
     except User.DoesNotExist:
         logger.error(Fore.RED + f"User with email {sender_email} not found." + Style.RESET_ALL)
         return {"user_details": existing_user_details}  # Preserve existing user details
 
     if result.name:
-        name_parts = result.name.strip(" ", 1)
+        name_parts = result.name.strip().split(" ", 1)  # ✅ Use split here
         user.first_name = name_parts[0]
         user.last_name = name_parts[1] if len(name_parts) > 1 else ""
 
