@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import List, Annotated, Optional
-from typing_extensions import TypedDict
+from typing_extensions import TypedDict, Dict
 from enum import Enum
 
 from langgraph.graph.message import add_messages
@@ -65,17 +65,16 @@ class ProofReaderOutput(BaseModel):
     )
 
 
-
 class GraphState(TypedDict):
-    emails: List[Email]
-    current_email: Email
-    previous_emails: List[Email]
-    email_category: str
-    generated_email: str
-    user_details: UserDetails
-    writer_messages: List[str]
-    transcript: List[str]
-    sendable: bool
-    trials: int
-    max_emails: int
-    emails_send: int
+    emails: List[Email]  # Queue of emails to process
+    current_email: Email  # Email currently being processed
+    email_category: EmailCategory  # Category of the current email
+    generated_email: str  # AI-generated response draft
+    user_details: UserDetails  # Extracted user details
+    writer_messages: List[str]  # Logs of proofreading and rewrites
+    transcript: List[Dict[str, str]]  # Structured transcript: {"timestamp": ..., "sender": ..., "message": ...}
+    previous_status: Optional[UserStatus]  # Status before processing the current email
+    current_status: UserStatus  # Updated status after classification
+    sendable: bool  # Is the draft sendable?
+    trials: int  # Number of email rewrite attempts
+    max_trials: int  # Maximum rewrite attempts allowed
