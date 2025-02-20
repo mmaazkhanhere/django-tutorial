@@ -1,6 +1,8 @@
 from django.contrib import admin
 from .models import PCPContract, User, EmailTranscript
-# Register your models here.
+
+
+
 
 class PCPContractAdmin(admin.ModelAdmin):
     list_display = ('first_name', 'last_name', 'email_address', 'start_date', 'end_date')
@@ -22,3 +24,4 @@ class EmailTranscriptAdmin(admin.ModelAdmin):
 admin.site.register(User, UserAdmin)
 admin.site.register(PCPContract, PCPContractAdmin)
 admin.site.register(EmailTranscript, EmailTranscriptAdmin)
+
