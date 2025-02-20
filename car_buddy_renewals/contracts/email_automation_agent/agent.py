@@ -2,13 +2,13 @@ from langgraph.graph import START, END, StateGraph
 
 from PIL import Image
 
-from agent_nodes import (
+from .agent_nodes import (
     load_new_emails,
     check_new_emails,
     is_email_inbox_empty,
     categorize_email,
     route_email_based_on_category,
-    load_full_email_thread,
+
     extract_user_information,
     classifying_user,
     write_email,
@@ -17,10 +17,10 @@ from agent_nodes import (
     must_rewrite,
     send_email_response,
     skip_spam_email,
-    sendgrid_email
+    #sendgrid_email
 )
 
-from agent_states import GraphState
+from .agent_state import GraphState
 
 
 
@@ -33,7 +33,6 @@ def email_agent():
     workflow.add_node("is_email_inbox_empty", is_email_inbox_empty)
     workflow.add_node("categorize_email", categorize_email)
 
-    workflow.add_node("load_full_email_thread", load_full_email_thread)
     workflow.add_node("extract_user_information", extract_user_information)
     workflow.add_node("classifying_user", classifying_user)
 
@@ -42,7 +41,7 @@ def email_agent():
     workflow.add_node("send_email_response", send_email_response)  # New node for sending emails
     workflow.add_node("skip_spam_email", skip_spam_email)
 
-    workflow.add_node("sendgrid_email", sendgrid_email)
+    #workflow.add_node("sendgrid_email", sendgrid_email)
 
     
 
@@ -67,15 +66,14 @@ def email_agent():
         "categorize_email",
         route_email_based_on_category,
         {
-            "car enquiry": "load_full_email_thread",
-            "general enquiry": "load_full_email_thread",
-            "service booking": "load_full_email_thread",
-            "test drive booking": "load_full_email_thread",
+            "car enquiry": "extract_user_information",
+            "general enquiry": "extract_user_information",
+            "service booking": "extract_user_information",
+            "test drive booking": "extract_user_information",
             "spam": "skip_spam_email"
         }
     )
 
-    workflow.add_edge("load_full_email_thread", "extract_user_information")
 
     workflow.add_conditional_edges("extract_user_information",
                                     write_email,
@@ -102,17 +100,17 @@ def email_agent():
     )
 
     # If the email is sent, check if there are still more emails to process
-    # workflow.add_edge("send_email_response", "is_email_inbox_empty")  # ✅ Now added send email response
-    workflow.add_conditional_edges(
-        "send_email_response",
-        write_email,
-        {
-            "approved": "sendgrid_email",
-            "refused": "sendgrid_email",
-            "unsure": "is_email_inbox_empty"
-        }
-    )
-    workflow.add_edge("sendgrid_email", END)
+    workflow.add_edge("send_email_response", "is_email_inbox_empty")  # ✅ Now added send email response
+    # workflow.add_conditional_edges(
+    #     "send_email_response",
+    #     write_email,
+    #     {
+    #         "approved": "sendgrid_email",
+    #         "refused": "sendgrid_email",
+    #         "unsure": "is_email_inbox_empty"
+    #     }
+    # )
+    #workflow.add_edge("sendgrid_email", END)
     workflow.add_edge("skip_spam_email", "is_email_inbox_empty")
 
     # Compile

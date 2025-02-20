@@ -412,8 +412,16 @@ def send_email_response(state: GraphState) -> GraphState:
     """Sends the email response directly using Gmail."""
     logger.info(Fore.YELLOW + "Sending email...\n" + Style.RESET_ALL)
 
+    current_email = state["emails"][-1]
     transcript = state.get("transcript", [])
     generated_email = state["generated_email"].strip()
+    sender_email = current_email.sender
+
+    try:
+        user = User.objects.get(email=sender_email)
+    except User.DoesNotExist:
+        logger.error(Fore.RED + f"User with email {sender_email} not found." + Style.RESET_ALL)
+        return state  # Exit if user not found, though this should not happen
 
     if not generated_email:
         logger.warning("Generated email is empty, skipping sending.")
@@ -429,6 +437,20 @@ def send_email_response(state: GraphState) -> GraphState:
     transcript.append(entry)
     
     logger.info(Fore.MAGENTA + f"Updated Transcript: {transcript}" + Style.RESET_ALL)
+
+    with transaction.atomic():
+        # Either fetch the existing transcript or create a new one for the user
+        email_transcript, created = EmailTranscript.objects.get_or_create(
+            customer_email=sender_email,
+            defaults={'transcript': []}
+        )
+
+        # Append new message to the existing transcript
+        email_transcript.transcript.append(entry)
+        email_transcript.save()
+
+        # Link the transcript to the user (if not already linked)
+        user.email_transcripts.add(email_transcript)
 
     gmail_tools.send_reply(state["current_email"], state["generated_email"])
     logger.info(Fore.YELLOW + "Email sent." + Style.RESET_ALL)
