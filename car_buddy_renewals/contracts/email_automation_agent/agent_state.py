@@ -42,7 +42,6 @@ class UserDetails(BaseModel):
     phone: str = Field(..., description="Phone number of the customer")  
     availability: str = Field(..., description="Availability for booking")
     car: str = Field(..., description="Vehicle details")
-    status: Optional[UserClassification] = Field(None, description="User classification status")
 
 
 
@@ -73,7 +72,6 @@ class GraphState(TypedDict):
     user_details: UserDetails  # Extracted user details
     writer_messages: List[str]  # Logs of proofreading and rewrites
     transcript: List[Dict[str, str]]  # Structured transcript: {"timestamp": ..., "sender": ..., "message": ...}
-    previous_status: Optional[UserStatus]  # Status before processing the current email
     current_status: UserStatus  # Updated status after classification
     sendable: bool  # Is the draft sendable?
     trials: int  # Number of email rewrite attempts

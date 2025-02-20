@@ -2,7 +2,7 @@ from colorama import Fore, Style
 from dotenv import load_dotenv
 import os
 import logging
-import re
+from ..helper_functions import clean_email_body
 
 # from sendgrid import SendGridAPIClient
 # from sendgrid.helpers.mail import *
@@ -35,8 +35,12 @@ gmail_tools = GmailToolsClass()
 def load_new_emails(state: GraphState)->GraphState:
     """Loads new emails from Gmail and updates the state."""
     logger.info(Fore.YELLOW + "Loading new emails...\n" + Style.RESET_ALL)
-    recent_emails = gmail_tools.fetch_unanswered_emails()
-    emails = [Email(**email) for email in recent_emails]
+    try:
+        recent_emails = gmail_tools.fetch_unanswered_emails()
+        emails = [Email(**email) for email in recent_emails]
+    except Exception as e:
+        logger.error(f"Failed to load new emails: {e}")
+        emails=[]
     return {"emails": emails}
 
 
@@ -59,24 +63,22 @@ def categorize_email(state: GraphState) -> GraphState:
     
     # Get the last email
     current_email = state["emails"][-1]
+    user_details = state.get("user_details", {})
+    user_details['email'] = current_email.sender
 
-    # Update transcript only if the message (plain email body) isn't already there
+    customer_name = user_details.get("name", "")
+
+
     transcript = state.get("transcript", [])
-    new_message = current_email.body.strip()
+    new_message =  clean_email_body(current_email.body)
 
-    # Remove email metadata (From, Sent, Subject, etc.)
-    new_message = re.sub(r"(?i)(From:.*|Sent:.*|To:.*|Subject:.*)", "", new_message).strip()
 
-    new_message = new_message.replace("________________________________", "").strip()
-    new_message = re.sub(r"\n+", " ", new_message)  # Convert newlines to single spaces
-    new_message = re.sub(r"\s{2,}", " ", new_message)  # Remove excessive spaces
-    new_message = re.sub(r"[•✔️✅🚗🎉\ud83d\ude97\ud83d\ude0a\ud83d\udcc5\ud83d\udcde]", "", new_message)  
-    new_message = new_message.replace("\n", " ")  # Ensure any lingering newlines are replaced with spaces
-    new_message = re.sub(r"\s{2,}", " ", new_message)  # Normalize excessive spaces
+    entry = {
+        'sender': customer_name,
+        'message': new_message,
+    }
 
-    cleaned_entry = f"Customer : {new_message}"
-
-    transcript.append(f"{cleaned_entry}")
+    transcript.append(entry)
 
     logger.info(Fore.MAGENTA + "Transcript updated with new customer message.\n" + Style.RESET_ALL)
 
@@ -94,7 +96,8 @@ def categorize_email(state: GraphState) -> GraphState:
     return {
         "email_category": result.category.value,
         "current_email": current_email,
-        "transcript": transcript
+        "transcript": transcript,
+        "user_details": user_details
     }
 
 
@@ -116,83 +119,61 @@ def route_email_based_on_category(state: GraphState) -> str:
         return "spam"
     
 
-def load_full_email_thread(state: GraphState) -> GraphState:
-    """Fetches the full email thread and extracts only sender and body."""
-
-    logger.info(Fore.YELLOW + "Fetching previous emails in the thread...\n" + Style.RESET_ALL)
-
-    thread_id = state["current_email"].threadId
-    print(f"Fetching emails for thread ID: {thread_id}")
-
-    # Fetch emails in the thread (ensuring it's a **list of dictionaries**)
-    emails_in_thread = gmail_tools.fetch_emails_in_thread(thread_id)
-
-    # Ensure the output format is correct
-    if not isinstance(emails_in_thread, list):
-        print("Error: Expected a list but got something else")
-        return {"previous_emails": []}
-
-    # Extract sender-body pairs and store them in order
-    email_thread_dict = {email["sender"]: email["body"] for email in emails_in_thread}
-
-    # Ensure the thread is ordered correctly by sorting by the most recent email first
-    sorted_emails = sorted(email_thread_dict.items(), key=lambda x: x[1], reverse=True)
-
-    print(f"Formatted emails: {sorted_emails}")
-    logger.info(Fore.MAGENTA + f"Emails fetched...\n {sorted_emails} \n" + Style.RESET_ALL)
-
-    return {
-        "previous_emails": sorted_emails
-    }
-
 
 def extract_user_information(state: GraphState):
     """Extract user information from the email"""
     logger.info(Fore.YELLOW + "Extracting user details...\n" + Style.RESET_ALL)
 
-    current_email = state["emails"][-1]
+    # Ensure emails exist before accessing the last one
+    if not state["emails"]:
+        logger.error("No emails found in state.")
+        return {"user_details": state.get("user_details", {})}  # Preserve existing user details
+
+    current_email = state["emails"][-1]  # Get the latest email
 
     # Ensure existing_user_details is always a dictionary
     existing_user_details = state.get("user_details", {})
-    
+
     # Convert existing_user_details to a UserDetails model if it isn't already
     try:
         if isinstance(existing_user_details, dict):
             existing_user_details = UserDetails(**existing_user_details)
     except Exception as e:
         logger.error(f"Failed to parse existing_user_details: {e}")
-        existing_user_details = UserDetails()  # Fallback to an empty UserDetails object
+        existing_user_details = UserDetails(name="", email="", phone="", availability="", car="", status=None)
 
+    # Prepare the prompt for LLM extraction
     user_extraction_prompt = PromptTemplate(
         template=USER_EXTRACTION_PROMPT,
         input_variables=["email"]
     )
-
     formatted_prompt = user_extraction_prompt.format(email=current_email.body)
-    
-    structure_llm = llm.with_structured_output(UserDetails, method="function_calling")
 
-    # Invoke the LLM to get structured output
-    result = structure_llm.invoke(formatted_prompt)
+    # Invoke LLM to extract user information
+    try:
+        structure_llm = llm.with_structured_output(UserDetails, method="function_calling")
+        result = structure_llm.invoke(formatted_prompt)
+    except Exception as e:
+        logger.error(f"LLM extraction failed: {e}")
+        result = UserDetails(name="", email="", phone="", availability="", car="", status=None)
+
+    logger.info(Fore.CYAN + f"Extracted User Details from LLM: {result.dict()}" + Style.RESET_ALL)
 
     # Ensure phone number has a fallback if missing
     result.phone = result.phone if result.phone else ""
 
-    # Merge the new result with existing_user_details, preserving existing fields where applicable
-    updated_user_details = {
-        "name": result.name if result.name else existing_user_details.name,
-        "email": result.email if result.email else existing_user_details.email,
-        "phone": result.phone if result.phone else existing_user_details.phone,
-        "availability": result.availability if result.availability else existing_user_details.availability,
-        "car": result.car if result.car else existing_user_details.car,
-        "status": existing_user_details.status  # Preserve the nested status object
-    }
+    updated_user_details = UserDetails(
+        name=result.name if result.name else existing_user_details.name,
+        email=result.email if result.email else existing_user_details.email,
+        phone=result.phone if result.phone else existing_user_details.phone,
+        availability=result.availability if result.availability else existing_user_details.availability,
+        car=result.car if result.car else existing_user_details.car,
+    )
 
-    logger.info(Fore.MAGENTA + f"User details: \n{updated_user_details}" + Style.RESET_ALL)
+    logger.info(Fore.MAGENTA + f"Final User Details: \n{updated_user_details.dict()}" + Style.RESET_ALL)
 
-    return {
-        "user_details": updated_user_details
-    }
+    return {"user_details": updated_user_details}
+
 
 
 
@@ -203,6 +184,7 @@ def classifying_user(state: GraphState):
     previous_emails = state["previous_emails"]
     emails_send = state["emails_send"]
     user_details = state["user_details"]
+    user_status = state["current_status"]
 
     user_classification_prompt = PromptTemplate(
         template=USER_CLASSIFICATION_PROMPT,
@@ -218,25 +200,9 @@ def classifying_user(state: GraphState):
     print(f"User classification: {normalized_status}")
 
     # Convert user_details dictionary to a Pydantic model
-    user_details_model = UserDetails(**state["user_details"])
+    user_status = normalized_status
 
-    # Update the user classification status with normalized value
-    updated_user_classification = UserClassification(
-        status=normalized_status,
-        reason=classification_result.reason
-    )
-
-    # Update only the status field of the user details
-    updated_user_details = UserDetails(
-        name=user_details_model.name,
-        email=user_details_model.email,
-        phone=user_details_model.phone,
-        availability=user_details_model.availability,
-        car=user_details_model.car,
-        status=updated_user_classification  # Only update the status
-    )
-
-    logger.info(Fore.MAGENTA + f"Updated user classification: {updated_user_classification.status}" + Style.RESET_ALL)
+    logger.info(Fore.MAGENTA + f"Updated user classification: {normalized_status}" + Style.RESET_ALL)
 
     # Increment emails_send only when the status is "unsure"
     if normalized_status == "unsure":
@@ -244,19 +210,14 @@ def classifying_user(state: GraphState):
         logger.info(Fore.YELLOW + f"Updating emails send: {emails_send}" + Style.RESET_ALL)
 
     return {
-        "user_details": updated_user_details,
+        "user_status": user_status,
         "emails_send": emails_send
     }
 
 
 
 def write_email(state: GraphState)->str:
-    user_details = state["user_details"]
-
-    if isinstance(user_details, dict):
-        user_details = UserDetails(**user_details)
-
-    user_status = user_details.status.status if user_details.status else "unsure"
+    user_status = state["current_status"]
 
     if user_status == "approved":
         return "approved"
@@ -411,20 +372,20 @@ def send_email_response(state: GraphState) -> GraphState:
     logger.info(Fore.YELLOW + "Sending email...\n" + Style.RESET_ALL)
 
     transcript = state.get("transcript", [])
-    # Append only the plain generated email text to transcript
-    new_entry = state["generated_email"].strip()
+    generated_email = state["generated_email"].strip()
 
-    # Remove email metadata (From, Sent, Subject, etc.)
-    new_entry = re.sub(r"(?i)(From:.*|Sent:.*|To:.*|Subject:.*)", "", new_entry).strip()
+    if not generated_email:
+        logger.warning("Generated email is empty, skipping sending.")
+        return state
 
-    new_entry = new_entry.replace("________________________________", "").strip()
-    new_entry = re.sub(r"\n+", " ", new_entry)  # Convert newlines to single spaces
-    new_entry = re.sub(r"\s{2,}", " ", new_entry)  # Remove excessive spaces
-    new_entry = re.sub(r"[•✔️✅🚗🎉\ud83d\ude97\ud83d\ude0a\ud83d\udcc5\ud83d\udcde]", "", new_entry)  # Remove emojis & symbols
-    new_entry = new_entry.replace("\n", " ")  # Replace newlines with a space
-    new_entry = re.sub(r"\s{2,}", " ", new_entry)  # Normalize excessive spaces
+    cleaned_email = clean_email_body(generated_email)
 
-    transcript.append(f"Car Buddy: {new_entry}")
+    entry = {
+        'sender': 'Car Buddy',
+        'message': cleaned_email,
+    }
+
+    transcript.append(entry)
     
     logger.info(Fore.MAGENTA + f"Updated Transcript: {transcript}" + Style.RESET_ALL)
 
@@ -447,32 +408,32 @@ def skip_spam_email(state):
     state["emails"].pop()
     return state
 
-def sendgrid_email(state):
+# def sendgrid_email(state):
 
-    user_details: UserDetails = state["user_details"]
-    transcript = state["transcript"]
+#     user_details: UserDetails = state["user_details"]
+#     transcript = state["transcript"]
 
-    data = {
-        "CustomerName": user_details.name,
-        "CustomerEmailAddress": user_details.email,
-        "PhoneNumber": user_details.phone,
-        "Transcript": transcript
-    }
+#     data = {
+#         "CustomerName": user_details.name,
+#         "CustomerEmailAddress": user_details.email,
+#         "PhoneNumber": user_details.phone,
+#         "Transcript": transcript
+#     }
 
-    message = Mail(from_email=FROM_EMAIL)
-    message.template_id = TEMPLATE_ID
-    recipient_emails = ["mmaazkhanhere@gmail.com"]
+#     message = Mail(from_email=FROM_EMAIL)
+#     message.template_id = TEMPLATE_ID
+#     recipient_emails = ["mmaazkhanhere@gmail.com"]
 
-    for email in recipient_emails:
-        personalization = Personalization()
-        personalization.add_to(To(email))
-        personalization.dynamic_template_data = data  # Ensure each recipient gets the dynamic data
-        message.add_personalization(personalization)
+#     for email in recipient_emails:
+#         personalization = Personalization()
+#         personalization.add_to(To(email))
+#         personalization.dynamic_template_data = data  # Ensure each recipient gets the dynamic data
+#         message.add_personalization(personalization)
 
-    sg = SendGridAPIClient(api_key=SENDGRID_API_KEY)
+#     sg = SendGridAPIClient(api_key=SENDGRID_API_KEY)
 
-    # Send the email
-    response = sg.send(message)
+#     # Send the email
+#     response = sg.send(message)
 
-    # Print the response status
-    print(f"Email sent to {recipient_emails}. Status Code: {response.status_code}")
+#     # Print the response status
+#     print(f"Email sent to {recipient_emails}. Status Code: {response.status_code}")
